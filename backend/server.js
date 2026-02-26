@@ -1,128 +1,106 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
 const app = express();
-const port = 5000;
+const port = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
 
-// Données mockées
-let mockUsers = [
-  { id: 1, email: 'admin@virtualdev.com', password: 'admin123', role: 'admin', name: 'Administrateur' },
-  { id: 2, email: 'comptable@virtualdev.com', password: 'comptable123', role: 'accountant', name: 'Comptable' },
-  { id: 3, email: 'finance@virtualdev.com', password: 'finance123', role: 'finance', name: 'Responsable Financier' }
-];
+// Import des contrôleurs (on les garde pour les autres routes)
+const { login } = require('./controllers/authController');
+const { getInvoices, createInvoice, updateStatus } = require('./controllers/invoiceController');
+const { getExtractions, getExtractionById } = require('./controllers/extractionController');
+const { getThresholds, updateThresholds } = require('./controllers/thresholdController');
+const { getUsers, createUser, updateUser, deleteUser } = require('./controllers/userController');
+const { getLogs } = require('./controllers/logController');
+const { protect, authorize } = require('./middleware/authMiddleware');
 
-let mockInvoices = [
-  { id: 1, ref: 'FAC-2026-089', supplier: 'Fournitures Pro', amount: 12450, date: '2026-03-15', status: 'pending', type: 'invoice', submittedBy: 2 },
-  { id: 2, ref: 'FAC-2026-092', supplier: 'Services Informatiques', amount: 8320, date: '2026-03-16', status: 'pending', type: 'invoice', submittedBy: 2 },
-  { id: 3, ref: 'FAC-2026-095', supplier: 'Équipements Bureau', amount: 15780, date: '2026-03-17', status: 'urgent', type: 'invoice', submittedBy: 2 },
-  { id: 4, ref: 'NDF-2026-023', supplier: 'Déplacements', amount: 450, date: '2026-03-18', status: 'pending', type: 'expense', submittedBy: 3 },
-  { id: 5, ref: 'NDF-2026-024', supplier: 'Restaurants', amount: 230, date: '2026-03-18', status: 'approved', type: 'expense', submittedBy: 3 },
-  { id: 6, ref: 'FAC-2026-101', supplier: 'Informatique Plus', amount: 5600, date: '2026-03-19', status: 'rejected', type: 'invoice', submittedBy: 2 }
-];
+// Routes existantes
+app.post('/api/auth/login', login);
+app.get('/api/invoices', protect, getInvoices);
+app.put('/api/invoices/:id/status', protect, updateStatus);
+app.get('/api/extractions', protect, getExtractions);
+app.get('/api/extractions/:id', protect, getExtractionById);
+app.get('/api/thresholds', protect, getThresholds);
+app.put('/api/thresholds', protect, updateThresholds);
+app.route('/api/users')
+  .get(protect, authorize('admin'), getUsers)
+  .post(protect, authorize('admin'), createUser);
+app.route('/api/users/:id')
+  .put(protect, authorize('admin'), updateUser)
+  .delete(protect, authorize('admin'), deleteUser);
+app.get('/api/logs', protect, authorize('admin'), getLogs);
 
-let mockExtractions = [
-  { id: 1, file: 'FAC_2026_001.pdf', progress: 65, confidence: 65, status: 'in_progress', fields: {} },
-  { id: 2, file: 'FACTURE_2026_045.png', progress: 100, confidence: 98, status: 'completed', fields: { montant: '8 320 €', fournisseur: 'Services Informatiques', date: '16/03/2026' } },
-  { id: 3, file: 'FAC_2026_002.pdf', progress: 30, confidence: 30, status: 'in_progress', fields: {} },
-  { id: 4, file: 'FACTURE_2026_046.pdf', progress: 100, confidence: 95, status: 'completed', fields: { montant: '15 780 €', fournisseur: 'Équipements Bureau', date: '17/03/2026' } }
-];
+// ---------- CONFIGURATION DE L'UPLOAD AVEC MULTER ----------
+// Créer le dossier uploads s'il n'existe pas
+const uploadDir = 'uploads';
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir);
+}
 
-let mockThresholds = {
-  ocrConfidence: 85,
-  autoValidationAmount: 1000,
-  requiredValidationAmount: 5000
+// Configuration du stockage
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(file.originalname);
+    cb(null, 'file-' + uniqueSuffix + ext);
+  }
+});
+
+// Filtre pour n'accepter que certains types de fichiers
+const fileFilter = (req, file, cb) => {
+  const allowedTypes = /pdf|png|jpg|jpeg|xml/;
+  const ext = path.extname(file.originalname).toLowerCase();
+  const mime = file.mimetype;
+  if (allowedTypes.test(ext) && 
+      (mime.startsWith('image/') || mime === 'application/pdf' || mime.includes('xml'))) {
+    cb(null, true);
+  } else {
+    cb(new Error('Type de fichier non autorisé'));
+  }
 };
 
-let mockLogs = [
-  { id: 1, user: 1, action: 'Connexion', details: 'Administrateur connecté', timestamp: new Date().toISOString() }
-];
+const upload = multer({ 
+  storage: storage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 Mo
+  fileFilter: fileFilter
+}).array('files', 10); // jusqu'à 10 fichiers
 
-// Auth
-app.post('/api/auth/login', (req, res) => {
-  const { email, password } = req.body;
-  const user = mockUsers.find(u => u.email === email && u.password === password);
-  if (user) {
-    const { password, ...userWithoutPassword } = user;
-    res.json(userWithoutPassword);
-  } else {
-    res.status(401).json({ message: 'Email ou mot de passe incorrect' });
-  }
-});
-
-// Invoices
-app.get('/api/invoices', (req, res) => {
-  res.json(mockInvoices);
-});
-
-app.put('/api/invoices/:id/status', (req, res) => {
-  const { id } = req.params;
-  const { status } = req.body;
-  const invoice = mockInvoices.find(inv => inv.id == id);
-  if (!invoice) {
-    return res.status(404).json({ message: 'Facture non trouvée' });
-  }
-  invoice.status = status;
-  res.json(invoice);
-});
-
-// Extractions
-app.get('/api/extractions', (req, res) => {
-  res.json(mockExtractions);
-});
-
-// Thresholds
-app.get('/api/thresholds', (req, res) => {
-  res.json(mockThresholds);
-});
-
-app.put('/api/thresholds', (req, res) => {
-  mockThresholds = { ...mockThresholds, ...req.body };
-  res.json(mockThresholds);
-});
-
-// Users
-app.get('/api/users', (req, res) => {
-  const usersWithoutPass = mockUsers.map(({ password, ...user }) => user);
-  res.json(usersWithoutPass);
-});
-
-app.post('/api/users', (req, res) => {
-  const newUser = { id: mockUsers.length + 1, ...req.body };
-  mockUsers.push(newUser);
-  const { password, ...userWithoutPass } = newUser;
-  res.status(201).json(userWithoutPass);
-});
-
-app.put('/api/users/:id', (req, res) => {
-  const { id } = req.params;
-  const index = mockUsers.findIndex(u => u.id == id);
-  if (index === -1) return res.status(404).json({ message: 'Utilisateur non trouvé' });
-  mockUsers[index] = { ...mockUsers[index], ...req.body };
-  const { password, ...userWithoutPass } = mockUsers[index];
-  res.json(userWithoutPass);
-});
-
-app.delete('/api/users/:id', (req, res) => {
-  const { id } = req.params;
-  const index = mockUsers.findIndex(u => u.id == id);
-  if (index === -1) return res.status(404).json({ message: 'Utilisateur non trouvé' });
-  mockUsers.splice(index, 1);
-  res.json({ message: 'Utilisateur supprimé' });
-});
-
-// Logs
-app.get('/api/logs', (req, res) => {
-  res.json(mockLogs);
-});
-
-// Upload (simulé)
+// Route d'upload
 app.post('/api/upload', (req, res) => {
-  res.json({ message: 'Fichiers uploadés avec succès (simulation)' });
+  upload(req, res, (err) => {
+    if (err) {
+      return res.status(400).json({ message: err.message });
+    }
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ message: 'Aucun fichier sélectionné' });
+    }
+    // Ici tu pourrais enregistrer les fichiers dans la table extractions si besoin
+    const filesInfo = req.files.map(f => ({
+      originalName: f.originalname,
+      savedName: f.filename,
+      size: f.size,
+      path: f.path
+    }));
+    res.json({ 
+      message: `${req.files.length} fichier(s) uploadé(s) avec succès`,
+      files: filesInfo 
+    });
+  });
 });
+
+// Servir les fichiers uploadés (optionnel)
+app.use('/uploads', express.static('uploads'));
+// ---------- FIN CONFIGURATION UPLOAD ----------
 
 app.listen(port, () => {
-  console.log(`Serveur backend démarré sur http://localhost:${port}`);
+  console.log(`Serveur démarré sur le port ${port}`);
 });

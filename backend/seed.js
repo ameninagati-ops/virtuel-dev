@@ -1,64 +1,36 @@
-const mongoose = require('mongoose');
-const User = require('./models/User');
-const Threshold = require('./models/Threshold');
 require('dotenv').config();
+const db = require('./config/db');
+const bcrypt = require('bcryptjs');
 
-const seedDatabase = async () => {
+async function seed() {
   try {
-    await mongoose.connect(process.env.MONGO_URI);
-    console.log('MongoDB connecté');
+    console.log('🌱 Seeding database...');
 
-    // Créer un utilisateur admin
-    const adminExists = await User.findOne({ email: 'admin@virtualdev.com' });
-    if (!adminExists) {
-      await User.create({
-        email: 'admin@virtualdev.com',
-        password: 'admin123',
-        role: 'admin',
-        name: 'Administrateur'
-      });
-      console.log('Admin créé');
-    } else {
-      console.log('Admin déjà existant');
-    }
+    const adminPass = await bcrypt.hash('admin123', 10);
+    const comptablePass = await bcrypt.hash('comptable123', 10);
+    const financePass = await bcrypt.hash('finance123', 10);
 
-    // Créer un utilisateur comptable
-    const comptableExists = await User.findOne({ email: 'comptable@virtualdev.com' });
-    if (!comptableExists) {
-      await User.create({
-        email: 'comptable@virtualdev.com',
-        password: 'comptable123',
-        role: 'accountant',
-        name: 'Comptable'
-      });
-      console.log('Comptable créé');
-    }
+    await db.query(`
+      INSERT INTO users (email, password, role, name) VALUES
+      ($1, $2, 'admin', 'Administrateur'),
+      ($3, $4, 'accountant', 'Comptable'),
+      ($5, $6, 'finance', 'Responsable Financier')
+      ON CONFLICT (email) DO NOTHING
+    `, ['admin@virtualdev.com', adminPass, 'comptable@virtualdev.com', comptablePass, 'finance@virtualdev.com', financePass]);
 
-    // Créer un utilisateur finance
-    const financeExists = await User.findOne({ email: 'finance@virtualdev.com' });
-    if (!financeExists) {
-      await User.create({
-        email: 'finance@virtualdev.com',
-        password: 'finance123',
-        role: 'finance',
-        name: 'Responsable Financier'
-      });
-      console.log('Finance créé');
-    }
+    await db.query(`
+      INSERT INTO thresholds (ocr_confidence, auto_validation_amount, required_validation_amount)
+      VALUES (85, 1000, 5000)
+      ON CONFLICT DO NOTHING
+    `);
 
-    // Créer les seuils par défaut
-    const threshold = await Threshold.findOne();
-    if (!threshold) {
-      await Threshold.create({});
-      console.log('Seuils par défaut créés');
-    }
-
-    console.log('Base de données initialisée');
-    process.exit();
+    console.log('✅ Seed terminé');
   } catch (error) {
-    console.error('Erreur lors du seed :', error);
-    process.exit(1);
+    console.error('❌ Erreur seed :', error);
+  } finally {
+    await db.close();
+    process.exit();
   }
-};
+}
 
-seedDatabase();
+seed();
